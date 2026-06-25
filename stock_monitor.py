@@ -33,7 +33,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(HERE, "state.json")
 LOG_FILE = os.path.join(HERE, "monitor.log")
 
-ALERT_PCT = 1.0  # percent move that triggers an alert
+ALERT_PCT = 2.0  # percent move that triggers an alert
 
 # ntfy.sh push topic. Subscribe to this exact topic in the ntfy iPhone app to
 # receive alerts. Treat the topic name as a secret, so it is NOT hard-coded here

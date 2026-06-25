@@ -4,3 +4,6 @@
 *.log
 # Local run state (cloud uses Actions cache instead)
 state.json
+
+# Local gh CLI download
+.tools/
