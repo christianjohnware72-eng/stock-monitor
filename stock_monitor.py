@@ -92,12 +92,14 @@ def session_label(dt):
 
 
 def fetch_quote(ticker):
-    """Return (ticker, last_price, day_open).
+    """Return (ticker, last_price, day_open, day_high, day_low).
 
     last_price is the most recent trade INCLUDING pre/post-market (last filled
     1-minute bar). day_open is today's regular-session opening price, used as the
     intraday baseline so we only alert on a fresh move *during* the day rather
-    than on how far the stock already sits from yesterday's close.
+    than on how far the stock already sits from yesterday's close. day_high/low
+    are the session range from the regular open onward (so they include
+    after-hours moves).
     """
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
@@ -113,6 +115,8 @@ def fetch_quote(ticker):
         quote = result.get("indicators", {}).get("quote", [{}])[0]
         opens = quote.get("open") or []
         closes = quote.get("close") or []
+        highs = quote.get("high") or []
+        lows = quote.get("low") or []
 
         # Latest trade, including pre/post-market.
         last = meta.get("regularMarketPrice")
@@ -120,35 +124,44 @@ def fetch_quote(ticker):
         if filled:
             last = filled[-1]
 
-        # Today's regular-session open = first bar at/after the regular start.
+        # Index of the first bar at/after the regular-session start.
         reg_start = (
             meta.get("currentTradingPeriod", {}).get("regular", {}).get("start")
         )
-        day_open = None
+        start_idx = 0
         if reg_start and ts:
             for i, t in enumerate(ts):
-                if t >= reg_start and i < len(opens) and opens[i] is not None:
-                    day_open = opens[i]
+                if t >= reg_start:
+                    start_idx = i
                     break
-        if day_open is None:  # pre-market fallback: first traded price today
-            first_opens = [o for o in opens if o is not None]
-            day_open = first_opens[0] if first_opens else None
+
+        # Today's open = first traded price at/after the regular start
+        # (pre-market fallback: first traded price of the day).
+        day_open = next((o for o in opens[start_idx:] if o is not None), None)
+        if day_open is None:
+            day_open = next((o for o in opens if o is not None), None)
+
+        # Session high/low from the regular open onward (includes after-hours).
+        hi = [h for h in highs[start_idx:] if h is not None]
+        lo = [lo_ for lo_ in lows[start_idx:] if lo_ is not None]
+        day_high = max(hi) if hi else last
+        day_low = min(lo) if lo else last
 
         if last is None or not day_open:
-            return ticker, None, None
-        return ticker, float(last), float(day_open)
+            return ticker, None, None, None, None
+        return ticker, float(last), float(day_open), float(day_high), float(day_low)
     except Exception as e:  # noqa: BLE001
         log(f"fetch error {ticker}: {e}")
-        return ticker, None, None
+        return ticker, None, None, None, None
 
 
 def fetch_all(tickers):
-    """ticker -> (last_price, day_open)."""
+    """ticker -> (last_price, day_open, day_high, day_low)."""
     out = {}
     with ThreadPoolExecutor(max_workers=8) as ex:
-        for ticker, price, day_open in ex.map(fetch_quote, tickers):
+        for ticker, price, day_open, day_high, day_low in ex.map(fetch_quote, tickers):
             if price is not None and day_open:
-                out[ticker] = (price, day_open)
+                out[ticker] = (price, day_open, day_high, day_low)
     return out
 
 
@@ -245,7 +258,7 @@ def main():
     priming = not alert_band
     session = session_label(dt)
 
-    for ticker, (price, day_open) in prices.items():
+    for ticker, (price, day_open, day_high, day_low) in prices.items():
         # Move measured from today's open — a fresh intraday move.
         pct = (price - day_open) / day_open * 100.0
         b = band(pct)
@@ -266,7 +279,8 @@ def main():
             title = f"{arrow} {session} — {ticker} {sign}{pct:.1f}%"
             message = (
                 f"{ticker} ${price:.2f} — {sign}{pct:.1f}% from today's open "
-                f"${day_open:.2f}"
+                f"${day_open:.2f}\n"
+                f"Day H ${day_high:.2f} / L ${day_low:.2f}"
             )
             notify(title, message)
             log(f"ALERT {ticker} {sign}{pct:.1f}% (open ${day_open:.2f} -> ${price:.2f})")
