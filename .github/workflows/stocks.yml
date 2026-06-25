@@ -1,0 +1,50 @@
+name: stock-monitor
+
+on:
+  # Every 5 minutes, during UTC hours that cover US pre/post-market (4:00-20:00 ET
+  # year-round, across daylight-saving shifts). The script itself enforces the
+  # exact ET weekday + 04:00-20:00 window and exits fast otherwise.
+  schedule:
+    - cron: "*/5 0-1,7-23 * * *"
+  # Allow manual "Run workflow" from the Actions tab for testing.
+  workflow_dispatch: {}
+
+# Never run two checks at once (keeps the saved alert state consistent).
+concurrency:
+  group: stock-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Restore the day's alert state (which tickers already alerted at which
+      # band) so we don't re-notify the same move every 5 minutes.
+      - name: Restore alert state
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: stockstate-${{ github.run_id }}
+          restore-keys: stockstate-
+
+      - name: Run monitor
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python stock_monitor.py
+
+      - name: Ensure state file exists
+        if: always()
+        run: '[ -f state.json ] || echo "{}" > state.json'
+
+      - name: Save alert state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: stockstate-${{ github.run_id }}

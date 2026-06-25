@@ -1,0 +1,6 @@
+# Local secret — the ntfy topic lives in a GitHub Actions secret in the cloud
+.ntfy_topic
+# Logs and local launchd output
+*.log
+# Local run state (cloud uses Actions cache instead)
+state.json
