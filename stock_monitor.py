@@ -79,12 +79,13 @@ def active_now(dt):
     return dtime(4, 0) <= dt.time() <= dtime(20, 0)
 
 
-def fetch_price(ticker):
-    """Return (ticker, last_price, prev_close).
+def fetch_quote(ticker):
+    """Return (ticker, last_price, day_open).
 
-    last_price is the most recent trade INCLUDING pre/post-market, taken from the
-    last filled 1-minute bar. prev_close is the previous regular-session close,
-    used as the baseline so the move matches the % shown in a stock app.
+    last_price is the most recent trade INCLUDING pre/post-market (last filled
+    1-minute bar). day_open is today's regular-session opening price, used as the
+    intraday baseline so we only alert on a fresh move *during* the day rather
+    than on how far the stock already sits from yesterday's close.
     """
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
@@ -96,28 +97,46 @@ def fetch_price(ticker):
             data = json.load(r)
         result = data["chart"]["result"][0]
         meta = result["meta"]
-        prev_close = meta.get("chartPreviousClose")
+        ts = result.get("timestamp") or []
+        quote = result.get("indicators", {}).get("quote", [{}])[0]
+        opens = quote.get("open") or []
+        closes = quote.get("close") or []
+
+        # Latest trade, including pre/post-market.
         last = meta.get("regularMarketPrice")
-        closes = result.get("indicators", {}).get("quote", [{}])[0].get("close")
-        if closes:
-            filled = [c for c in closes if c is not None]
-            if filled:
-                last = filled[-1]  # newest trade incl. pre/post-market
-        if last is None or prev_close is None:
+        filled = [c for c in closes if c is not None]
+        if filled:
+            last = filled[-1]
+
+        # Today's regular-session open = first bar at/after the regular start.
+        reg_start = (
+            meta.get("currentTradingPeriod", {}).get("regular", {}).get("start")
+        )
+        day_open = None
+        if reg_start and ts:
+            for i, t in enumerate(ts):
+                if t >= reg_start and i < len(opens) and opens[i] is not None:
+                    day_open = opens[i]
+                    break
+        if day_open is None:  # pre-market fallback: first traded price today
+            first_opens = [o for o in opens if o is not None]
+            day_open = first_opens[0] if first_opens else None
+
+        if last is None or not day_open:
             return ticker, None, None
-        return ticker, float(last), float(prev_close)
+        return ticker, float(last), float(day_open)
     except Exception as e:  # noqa: BLE001
         log(f"fetch error {ticker}: {e}")
         return ticker, None, None
 
 
 def fetch_all(tickers):
-    """ticker -> (last_price, prev_close)."""
+    """ticker -> (last_price, day_open)."""
     out = {}
     with ThreadPoolExecutor(max_workers=8) as ex:
-        for ticker, price, prev in ex.map(fetch_price, tickers):
-            if price is not None and prev:
-                out[ticker] = (price, prev)
+        for ticker, price, day_open in ex.map(fetch_quote, tickers):
+            if price is not None and day_open:
+                out[ticker] = (price, day_open)
     return out
 
 
@@ -195,9 +214,8 @@ def main():
     today = dt.strftime("%Y-%m-%d")
     state = load_state()
 
-    # Baseline = previous close (fetched live each run). Only the per-ticker
-    # alert band is persisted, and it resets each trading day so the day starts
-    # fresh.
+    # Baseline = today's open (fetched live each run). Only the per-ticker alert
+    # band is persisted, and it resets each trading day so the day starts fresh.
     if state.get("trading_day") != today:
         state = {"trading_day": today, "alert_band": {}}
         log(f"new trading day {today}: alert bands reset")
@@ -209,22 +227,37 @@ def main():
         log("no prices fetched; skipping")
         return
 
-    movers = []
-    for ticker, (price, prev_close) in prices.items():
-        pct = (price - prev_close) / prev_close * 100.0
+    # First check of the day: record current bands silently so we don't blast
+    # alerts for moves that happened before we were watching. Only crossings
+    # that occur *after* this prime will notify.
+    priming = not alert_band
+
+    for ticker, (price, day_open) in prices.items():
+        # Move measured from today's open — a fresh intraday move.
+        pct = (price - day_open) / day_open * 100.0
         b = band(pct)
 
+        if priming:
+            alert_band[ticker] = b
+            continue
+
+        # Alert only when this stock crosses into a new whole-percent band at or
+        # beyond the threshold (e.g. first hit of +/-2%, then +/-3%...).
         if abs(b) >= ALERT_PCT and b != alert_band.get(ticker, 0):
             alert_band[ticker] = b
+            arrow = "📈" if pct >= 0 else "📉"
             sign = "+" if pct >= 0 else ""
-            movers.append((ticker, pct, price, f"{sign}{pct:.1f}%"))
+            # One notification per stock — just the one that moved.
+            title = f"{arrow} {ticker} {sign}{pct:.1f}% today"
+            message = (
+                f"{ticker} ${price:.2f} — {sign}{pct:.1f}% from today's open "
+                f"${day_open:.2f}"
+            )
+            notify(title, message)
+            log(f"ALERT {ticker} {sign}{pct:.1f}% (open ${day_open:.2f} -> ${price:.2f})")
 
-    if movers:
-        movers.sort(key=lambda x: abs(x[1]), reverse=True)
-        summary = "  ".join(f"{t} {lbl} ${p:.2f}" for t, _, p, lbl in movers)
-        title = f"📈 Stock Alert — {len(movers)} mover{'s' if len(movers) > 1 else ''}"
-        notify(title, summary)
-        log(f"ALERT: {summary}")
+    if priming:
+        log(f"primed {len(alert_band)} bands (first check of day — no alerts)")
 
     state["alert_band"] = alert_band
     save_state(state)

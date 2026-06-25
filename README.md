@@ -1,12 +1,16 @@
 # Stock Move Monitor
 
-Pushes a phone notification (via [ntfy.sh](https://ntfy.sh)) whenever one of a
-watchlist of stocks moves **±1% vs. the previous close**, including pre-market
-(from 4:00 AM ET) and after-hours (until 8:00 PM ET).
+Pushes a phone notification (via [ntfy.sh](https://ntfy.sh)) whenever a
+watchlisted stock makes a **fresh ±2% intraday move from today's open**,
+including pre-market (from 4:00 AM ET) and after-hours (until 8:00 PM ET).
 
-- One alert when a stock first crosses ±1% on the day; it re-alerts only when it
-  crosses into a new whole-percent band (±2%, ±3%, …). All movers in a single
-  check are bundled into one notification.
+- **One notification per stock** — only the ticker that actually moved.
+- The move is measured from **today's regular-session open**, so the morning is
+  quiet and you only hear about genuine intraday moves (not how far a stock
+  already sits from yesterday's close).
+- The first check each day primes silently; alerts fire only on crossings that
+  happen afterward. A stock re-alerts when it reaches the next whole percent
+  (±3%, ±4%, …), with hysteresis so it won't spam around the threshold.
 - Prices come from Yahoo Finance (no API key). The latest trade including
   pre/post-market is used.
 
