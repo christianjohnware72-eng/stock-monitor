@@ -79,6 +79,18 @@ def active_now(dt):
     return dtime(4, 0) <= dt.time() <= dtime(20, 0)
 
 
+def session_label(dt):
+    """Which US session we're in, by ET time, for the alert's top line."""
+    t = dt.time()
+    if dtime(9, 30) <= t < dtime(16, 0):
+        return "Market hours"
+    if dtime(4, 0) <= t < dtime(9, 30):
+        return "Pre-market"
+    if dtime(16, 0) <= t <= dtime(20, 0):
+        return "After-hours"
+    return "Market closed"
+
+
 def fetch_quote(ticker):
     """Return (ticker, last_price, day_open).
 
@@ -231,6 +243,7 @@ def main():
     # alerts for moves that happened before we were watching. Only crossings
     # that occur *after* this prime will notify.
     priming = not alert_band
+    session = session_label(dt)
 
     for ticker, (price, day_open) in prices.items():
         # Move measured from today's open — a fresh intraday move.
@@ -247,8 +260,10 @@ def main():
             alert_band[ticker] = b
             arrow = "📈" if pct >= 0 else "📉"
             sign = "+" if pct >= 0 else ""
-            # One notification per stock — just the one that moved.
-            title = f"{arrow} {ticker} {sign}{pct:.1f}% today"
+            # One notification per stock — just the one that moved. Top line is
+            # tagged with the current session (Pre-market / Market hours /
+            # After-hours).
+            title = f"{arrow} {session} — {ticker} {sign}{pct:.1f}%"
             message = (
                 f"{ticker} ${price:.2f} — {sign}{pct:.1f}% from today's open "
                 f"${day_open:.2f}"
