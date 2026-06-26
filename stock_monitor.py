@@ -242,17 +242,15 @@ def band(pct):
 def alert_card(ticker, pct, price, base, base_label, day_high, day_low, session):
     """A bordered 'card' for the notification body.
 
-    Phone notifications use a proportional font, so we avoid vertical borders
-    (they'd look ragged) and instead use full-width horizontal rules as the
-    border, with emoji-labeled rows for structure.
+    Phone notifications use a proportional font (and the ntfy iOS app doesn't
+    render Markdown tables), so we use full-width horizontal rules as the border
+    with emoji-labeled rows for structure.
     """
     arrow = "📈" if pct >= 0 else "📉"
     sign = "+" if pct >= 0 else ""
     rule = "━" * 20
 
     def row(emoji, label, value):
-        # Pad the label so values line up about as well as a proportional font
-        # allows.
         return f"{emoji} {label:<10} {value}"
 
     return "\n".join([
