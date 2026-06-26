@@ -92,14 +92,12 @@ def session_label(dt):
 
 
 def fetch_quote(ticker):
-    """Return (ticker, last_price, day_open, day_high, day_low).
+    """Return a dict of reference prices for the ticker, or None on failure.
 
-    last_price is the most recent trade INCLUDING pre/post-market (last filled
-    1-minute bar). day_open is today's regular-session opening price, used as the
-    intraday baseline so we only alert on a fresh move *during* the day rather
-    than on how far the stock already sits from yesterday's close. day_high/low
-    are the session range from the regular open onward (so they include
-    after-hours moves).
+    Keys: last (latest trade incl. pre/post-market), day_open (today's regular
+    open), prev_close (prior regular-session close), reg_close (today's regular
+    close), day_high, day_low. The caller picks the baseline by session:
+    regular -> day_open, pre-market -> prev_close, after-hours -> reg_close.
     """
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
@@ -124,10 +122,10 @@ def fetch_quote(ticker):
         if filled:
             last = filled[-1]
 
-        # Index of the first bar at/after the regular-session start.
-        reg_start = (
-            meta.get("currentTradingPeriod", {}).get("regular", {}).get("start")
-        )
+        reg = meta.get("currentTradingPeriod", {}).get("regular", {})
+        reg_start, reg_end = reg.get("start"), reg.get("end")
+
+        # First bar index at/after the regular-session start.
         start_idx = 0
         if reg_start and ts:
             for i, t in enumerate(ts):
@@ -141,27 +139,46 @@ def fetch_quote(ticker):
         if day_open is None:
             day_open = next((o for o in opens if o is not None), None)
 
-        # Session high/low from the regular open onward (includes after-hours).
-        hi = [h for h in highs[start_idx:] if h is not None]
-        lo = [lo_ for lo_ in lows[start_idx:] if lo_ is not None]
+        # Today's regular close = last traded price at/before the regular end.
+        reg_close = None
+        if reg_end and ts:
+            for i in range(len(ts) - 1, -1, -1):
+                if ts[i] <= reg_end and i < len(closes) and closes[i] is not None:
+                    reg_close = closes[i]
+                    break
+        if reg_close is None:
+            reg_close = last
+
+        prev_close = meta.get("chartPreviousClose")
+
+        # Full-day high/low across all bars (so it's sensible in any session).
+        hi = [h for h in highs if h is not None]
+        lo = [x for x in lows if x is not None]
         day_high = max(hi) if hi else last
         day_low = min(lo) if lo else last
 
         if last is None or not day_open:
-            return ticker, None, None, None, None
-        return ticker, float(last), float(day_open), float(day_high), float(day_low)
+            return ticker, None
+        return ticker, {
+            "last": float(last),
+            "day_open": float(day_open),
+            "prev_close": float(prev_close) if prev_close else float(day_open),
+            "reg_close": float(reg_close),
+            "day_high": float(day_high),
+            "day_low": float(day_low),
+        }
     except Exception as e:  # noqa: BLE001
         log(f"fetch error {ticker}: {e}")
-        return ticker, None, None, None, None
+        return ticker, None
 
 
 def fetch_all(tickers):
-    """ticker -> (last_price, day_open, day_high, day_low)."""
+    """ticker -> dict of reference prices (see fetch_quote)."""
     out = {}
     with ThreadPoolExecutor(max_workers=8) as ex:
-        for ticker, price, day_open, day_high, day_low in ex.map(fetch_quote, tickers):
-            if price is not None and day_open:
-                out[ticker] = (price, day_open, day_high, day_low)
+        for ticker, q in ex.map(fetch_quote, tickers):
+            if q is not None:
+                out[ticker] = q
     return out
 
 
@@ -237,13 +254,17 @@ def main():
         return
 
     today = dt.strftime("%Y-%m-%d")
+    session = session_label(dt)
     state = load_state()
 
-    # Baseline = today's open (fetched live each run). Only the per-ticker alert
-    # band is persisted, and it resets each trading day so the day starts fresh.
-    if state.get("trading_day") != today:
-        state = {"trading_day": today, "alert_band": {}}
-        log(f"new trading day {today}: alert bands reset")
+    # Each session uses its own baseline (regular -> today's open, pre-market ->
+    # prior close, after-hours -> today's close). Because the baseline changes at
+    # each session boundary, the alert bands are reset and re-primed whenever the
+    # day OR the session changes — so alerts reflect moves *within* the current
+    # session only.
+    if state.get("trading_day") != today or state.get("session") != session:
+        state = {"trading_day": today, "session": session, "alert_band": {}}
+        log(f"{today} {session}: bands reset for new session")
 
     alert_band = state["alert_band"]
 
@@ -252,15 +273,23 @@ def main():
         log("no prices fetched; skipping")
         return
 
-    # First check of the day: record current bands silently so we don't blast
-    # alerts for moves that happened before we were watching. Only crossings
-    # that occur *after* this prime will notify.
-    priming = not alert_band
-    session = session_label(dt)
+    # Which reference price this session compares against, and how to label it.
+    base_key, base_word = {
+        "Market hours": ("day_open", "today's open"),
+        "Pre-market": ("prev_close", "prev close"),
+        "After-hours": ("reg_close", "today's close"),
+    }.get(session, ("day_open", "today's open"))
 
-    for ticker, (price, day_open, day_high, day_low) in prices.items():
-        # Move measured from today's open — a fresh intraday move.
-        pct = (price - day_open) / day_open * 100.0
+    # First check of this session: record current bands silently so we don't
+    # blast alerts for moves that happened before we started watching it.
+    priming = not alert_band
+
+    for ticker, q in prices.items():
+        base = q[base_key]
+        if not base:
+            continue
+        price = q["last"]
+        pct = (price - base) / base * 100.0
         b = band(pct)
 
         if priming:
@@ -278,15 +307,15 @@ def main():
             # After-hours).
             title = f"{arrow} {session} — {ticker} {sign}{pct:.1f}%"
             message = (
-                f"{ticker} ${price:.2f} — {sign}{pct:.1f}% from today's open "
-                f"${day_open:.2f}\n"
-                f"Day H ${day_high:.2f} / L ${day_low:.2f}"
+                f"{ticker} ${price:.2f} — {sign}{pct:.1f}% from {base_word} "
+                f"${base:.2f}\n"
+                f"Day H ${q['day_high']:.2f} / L ${q['day_low']:.2f}"
             )
             notify(title, message)
-            log(f"ALERT {ticker} {sign}{pct:.1f}% (open ${day_open:.2f} -> ${price:.2f})")
+            log(f"ALERT {session} {ticker} {sign}{pct:.1f}% ({base_word} ${base:.2f} -> ${price:.2f})")
 
     if priming:
-        log(f"primed {len(alert_band)} bands (first check of day — no alerts)")
+        log(f"primed {len(alert_band)} bands ({session} start — no alerts)")
 
     state["alert_band"] = alert_band
     save_state(state)
