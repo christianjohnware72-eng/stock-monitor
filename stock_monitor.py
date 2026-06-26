@@ -282,7 +282,9 @@ def main():
 
     # First check of this session: record current bands silently so we don't
     # blast alerts for moves that happened before we started watching it.
-    priming = not alert_band
+    # Exception: pre-market does NOT prime, so an existing overnight gap (already
+    # >=2% vs the prior close at the first check) still alerts.
+    priming = (not alert_band) and session != "Pre-market"
 
     for ticker, q in prices.items():
         base = q[base_key]

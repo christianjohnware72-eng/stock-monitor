@@ -10,8 +10,10 @@ ET), regular hours, and after-hours (until 8:00 PM ET).
   - **Market hours** → today's regular-session **open**
   - **Pre-market** → the **prior session's close**
   - **After-hours** → **today's regular close**
-- Bands re-prime silently at the start of each session, so you only hear about
-  moves that happen *within* the current session, and a stock re-alerts at each
+- Market hours and after-hours re-prime silently at the start of the session,
+  so you only hear about moves that happen *within* it. **Pre-market is the
+  exception**: it does not prime, so an existing overnight gap (already ≥2% vs
+  the prior close) still alerts on the first check. A stock re-alerts at each
   further whole percent (±3%, ±4%, …) with hysteresis (no threshold spam).
 - Prices come from Yahoo Finance (no API key); the latest trade including
   pre/post-market is used. The body also shows the day's high/low.
