@@ -239,6 +239,34 @@ def band(pct):
     return int(pct) if pct >= 0 else -int(-pct)
 
 
+def alert_card(ticker, pct, price, base, base_label, day_high, day_low, session):
+    """A bordered 'card' for the notification body.
+
+    Phone notifications use a proportional font, so we avoid vertical borders
+    (they'd look ragged) and instead use full-width horizontal rules as the
+    border, with emoji-labeled rows for structure.
+    """
+    arrow = "📈" if pct >= 0 else "📉"
+    sign = "+" if pct >= 0 else ""
+    rule = "━" * 20
+
+    def row(emoji, label, value):
+        # Pad the label so values line up about as well as a proportional font
+        # allows.
+        return f"{emoji} {label:<10} {value}"
+
+    return "\n".join([
+        rule,
+        f"{arrow} {ticker}   {sign}{pct:.1f}%   ({session})",
+        rule,
+        row("💵", "Price", f"${price:,.2f}"),
+        row("📊", f"vs {base_label}", f"${base:,.2f}"),
+        row("🔼", "Day high", f"${day_high:,.2f}"),
+        row("🔽", "Day low", f"${day_low:,.2f}"),
+        rule,
+    ])
+
+
 def main():
     args = set(sys.argv[1:])
     force = "--force" in args
@@ -273,12 +301,12 @@ def main():
         log("no prices fetched; skipping")
         return
 
-    # Which reference price this session compares against, and how to label it.
-    base_key, base_word = {
-        "Market hours": ("day_open", "today's open"),
-        "Pre-market": ("prev_close", "prev close"),
-        "After-hours": ("reg_close", "today's close"),
-    }.get(session, ("day_open", "today's open"))
+    # Which reference price this session compares against, and its short label.
+    base_key, base_label = {
+        "Market hours": ("day_open", "Open"),
+        "Pre-market": ("prev_close", "Prev close"),
+        "After-hours": ("reg_close", "Close"),
+    }.get(session, ("day_open", "Open"))
 
     # First check of this session: record current bands silently so we don't
     # blast alerts for moves that happened before we started watching it.
@@ -304,17 +332,16 @@ def main():
             alert_band[ticker] = b
             arrow = "📈" if pct >= 0 else "📉"
             sign = "+" if pct >= 0 else ""
-            # One notification per stock — just the one that moved. Top line is
-            # tagged with the current session (Pre-market / Market hours /
-            # After-hours).
-            title = f"{arrow} {session} — {ticker} {sign}{pct:.1f}%"
-            message = (
-                f"{ticker} ${price:.2f} — {sign}{pct:.1f}% from {base_word} "
-                f"${base:.2f}\n"
-                f"Day H ${q['day_high']:.2f} / L ${q['day_low']:.2f}"
+            # One notification per stock — just the one that moved. The body is a
+            # "card" with horizontal rule borders + emoji-labeled rows, which
+            # renders cleanly in a phone's proportional font.
+            title = f"{arrow} {ticker} {sign}{pct:.1f}% · {session}"
+            message = alert_card(
+                ticker, pct, price, base, base_label,
+                q["day_high"], q["day_low"], session,
             )
             notify(title, message)
-            log(f"ALERT {session} {ticker} {sign}{pct:.1f}% ({base_word} ${base:.2f} -> ${price:.2f})")
+            log(f"ALERT {session} {ticker} {sign}{pct:.1f}% ({base_label} ${base:.2f} -> ${price:.2f})")
 
     if priming:
         log(f"primed {len(alert_band)} bands ({session} start — no alerts)")
