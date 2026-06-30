@@ -1,11 +1,11 @@
 name: stock-monitor
 
 on:
-  # Every 5 minutes, during UTC hours that cover US pre/post-market (4:00-20:00 ET
-  # year-round, across daylight-saving shifts). The script itself enforces the
-  # exact ET weekday + 04:00-20:00 window and exits fast otherwise.
+  # Hourly (top of each hour), during UTC hours that cover US pre/post-market
+  # (4:00-20:00 ET year-round, across daylight-saving shifts). The script itself
+  # enforces the exact ET weekday + 04:00-20:00 window and exits fast otherwise.
   schedule:
-    - cron: "*/5 0-1,7-23 * * *"
+    - cron: "0 0-1,7-23 * * *"
   # Allow manual "Run workflow" from the Actions tab for testing.
   workflow_dispatch: {}
 
